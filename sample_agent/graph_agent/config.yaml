@@ -1,0 +1,25 @@
+# Agent Card metadata exposed to A2A clients/discovery.
+card_config:
+  agent_name: Graphiti Retrieval Agent
+  description: >
+    An LLM tool-calling agent that runs Graphiti hybrid search (Oracle PG) to retrieve
+    nodes, edges, episodes, and communities for grounding and routing.
+  skills:
+    - id: graphiti_retrieval
+      name: Graphiti Retrieval
+      description: Search a Graphiti knowledge graph with hybrid BM25 + vector retrieval.
+      tags:
+        - graphiti
+        - oracle
+        - retrieval
+        - tool-calling
+      examples:
+        - What facts in the graph relate to this question?
+        - Find nodes and edges about a topic in partition X.
+
+# Runtime executor wiring for this agent.
+executor_config:
+  adk_agent_builder: sample_agent.graph_agent.a2a_agent_core.build_graph_llm_agent
+  trace_name: graph_agent_executor
+  artifact_name: graph_agent
+  failed_text_message: Failed to generate a graph agent response with text content.
