@@ -18,15 +18,15 @@ from sample_agent.graph_agent.registry import build_local_a2a_graph_agent
 async def _main() -> None:
     mode = OrchestrationMode.HOST_DRIVEN
     a2a_agent = build_local_a2a_graph_agent()
-    metadata: dict[str, str] = {}
+    metadata: dict[str, str] | None = None
     gid = os.getenv("GRAPHITI_DEFAULT_GROUP_ID", "").strip()
     if gid:
-        metadata["graph_id"] = gid
+        metadata = {"graph_id": gid}
     result = await run_local_a2a_orchestration(
         a2a_agent=a2a_agent,
         message_text="What does the graph contain that is relevant to the user's domain?",
         mode=mode,
-        metadata=metadata or None,
+        metadata=metadata,
     )
     print("task_id:", result.task_id)
     print("task_status:", result.task_status)

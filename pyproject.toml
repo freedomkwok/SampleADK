@@ -17,6 +17,7 @@ dependencies = [
     "starlette>=0.34.0",
     "graphiti-core[oracle]",
     "openai>=1.50.0",
+    "litellm>=1.75.5",
 ]
 
 [tool.hatch.build.targets.wheel]

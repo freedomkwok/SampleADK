@@ -20,11 +20,16 @@ def _resolved_group_ids(group_id: str, tool_context: Context) -> list[str] | Non
     return [gid] if gid else None
 
 
+def _normalized_query(query: str) -> str:
+    return query.strip()
+
+
 async def _search_facts_async(query: str, limit: int, group_ids: list[str] | None) -> dict[str, Any]:
     client = graphiti()
-    edges = await client.search(query=query.strip(), num_results=max(1, limit), group_ids=group_ids)
+    normalized_query = _normalized_query(query)
+    edges = await client.search(query=normalized_query, num_results=max(1, limit), group_ids=group_ids)
     return {
-        "query": query.strip(),
+        "query": normalized_query,
         "group_ids": group_ids,
         "edges": [compact_model(edge) for edge in edges],
         "count": len(edges),
@@ -34,9 +39,10 @@ async def _search_facts_async(query: str, limit: int, group_ids: list[str] | Non
 async def _hybrid_search_async(query: str, limit: int, group_ids: list[str] | None) -> dict[str, Any]:
     client = graphiti()
     cfg = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": max(1, limit)})
-    results = await client.search_(query=query.strip(), config=cfg, group_ids=group_ids)
+    normalized_query = _normalized_query(query)
+    results = await client.search_(query=normalized_query, config=cfg, group_ids=group_ids)
     return {
-        "query": query.strip(),
+        "query": normalized_query,
         "group_ids": group_ids,
         "edges": [compact_model(edge) for edge in results.edges],
         "nodes": [compact_model(node) for node in results.nodes],
@@ -64,12 +70,13 @@ def graph_search_facts(
     (from A2A message metadata) / ``GRAPHITI_DEFAULT_GROUP_ID``.
     """
     group_ids = _resolved_group_ids(group_id, tool_context)
-    if not query.strip():
+    normalized_query = _normalized_query(query)
+    if not normalized_query:
         return {"query": "", "group_ids": group_ids, "edges": [], "count": 0}
     try:
-        return run_graphiti_coroutine(_search_facts_async(query, limit, group_ids))
+        return run_graphiti_coroutine(_search_facts_async(normalized_query, limit, group_ids))
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc), "query": query.strip(), "group_ids": group_ids}
+        return {"error": str(exc), "query": normalized_query, "group_ids": group_ids}
 
 
 def graph_hybrid_search(
@@ -81,7 +88,8 @@ def graph_hybrid_search(
 ) -> dict[str, Any]:
     """Full hybrid search across edges, nodes, episodes, and communities (RRF recipe)."""
     group_ids = _resolved_group_ids(group_id, tool_context)
-    if not query.strip():
+    normalized_query = _normalized_query(query)
+    if not normalized_query:
         return {
             "query": "",
             "group_ids": group_ids,
@@ -92,6 +100,6 @@ def graph_hybrid_search(
             "counts": {"edges": 0, "nodes": 0, "episodes": 0, "communities": 0},
         }
     try:
-        return run_graphiti_coroutine(_hybrid_search_async(query, limit, group_ids))
+        return run_graphiti_coroutine(_hybrid_search_async(normalized_query, limit, group_ids))
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc), "query": query.strip(), "group_ids": group_ids}
+        return {"error": str(exc), "query": normalized_query, "group_ids": group_ids}

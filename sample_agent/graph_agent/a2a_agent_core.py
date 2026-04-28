@@ -22,15 +22,30 @@ _DEFAULT_INSTRUCTION = (
 )
 
 
+def _is_enabled(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def build_graph_llm_agent(
     *,
     langfuse_client: Any = None,
     instruction_prompt_name: str | None = None,
     instruction_prompt_label: str | None = None,
 ) -> LlmAgent:
-    """Build the LLM tool-calling agent (YAML ``adk_agent_builder`` target)."""
+    """Build the LLM tool-calling agent (YAML ``adk_agent_builder`` target).
+
+    Default: Gemini via ``ADK_MODEL``. Set ``ADK_USE_LITELLM_CHATGPT=1`` to use
+    OpenAI through ``ChatGPTClient`` (``LiteLlm`` + ``register_chatgpt_litellm``);
+    requires ``OPENAI_API_KEY`` and uses ``OPENAI_MODEL`` for the OpenAI model id.
+    """
     del langfuse_client, instruction_prompt_name, instruction_prompt_label
-    model = (os.getenv("ADK_MODEL") or os.getenv("OPENAI_MODEL") or "gemini-2.0-flash").strip()
+    use_litellm = _is_enabled(os.getenv("ADK_USE_LITELLM_CHATGPT", ""))
+    if use_litellm:
+        from sample_agent.litellm_chatgpt_adapter import build_adk_litellm_for_chatgpt
+
+        model = build_adk_litellm_for_chatgpt()
+    else:
+        model = (os.getenv("ADK_MODEL") or "gemini-2.0-flash").strip()
     return LlmAgent(
         model=model,
         name=_AGENT_NAME,
