@@ -9,7 +9,10 @@ from functools import lru_cache
 from typing import Any, Coroutine, TypeVar
 
 from graphiti_core.driver.oracle_pg_driver import OraclePGDriver
+from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.graphiti import Graphiti
+from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
 T = TypeVar("T")
 
@@ -78,6 +81,41 @@ def _oracle_driver_kwargs() -> dict[str, Any]:
     return kwargs
 
 
+def _build_llm_client() -> OpenAIGenericClient:
+    api_key = _env_str("LLM_API_KEY") or _env_str("OPENAI_API_KEY")
+    base_url = _env_str("LLM_BASE_URL") or _env_str("OPENAI_BASE_URL")
+    model = _env_str("GRAPHITI_LLM_MODEL") or _env_str("LLM_MODEL_NAME")
+    small_model = _env_str("GRAPHITI_LLM_SMALL_MODEL")
+    temperature = float(_env_str("GRAPHITI_LLM_TEMPERATURE") or "0")
+    max_tokens = int(_env_str("GRAPHITI_LLM_MAX_TOKENS") or "50000")
+
+    config = LLMConfig(
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        small_model=small_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return OpenAIGenericClient(config=config, max_tokens=max_tokens)
+
+
+def _build_embedder() -> OpenAIEmbedder:
+    api_key = _env_str("GRAPHITI_EMBEDDING_API_KEY") or _env_str("OPENAI_API_KEY")
+    base_url = _env_str("GRAPHITI_EMBEDDING_BASE_URL") or _env_str("OPENAI_BASE_URL")
+    embedding_model = _env_str("GRAPHITI_EMBEDDING_MODEL") or _env_str("OPENAI_EMBEDDING_MODEL")
+
+    if embedding_model:
+        config = OpenAIEmbedderConfig(
+            api_key=api_key,
+            base_url=base_url,
+            embedding_model=embedding_model,
+        )
+    else:
+        config = OpenAIEmbedderConfig(api_key=api_key, base_url=base_url)
+    return OpenAIEmbedder(config=config)
+
+
 def run_graphiti_coroutine(coro: Coroutine[Any, Any, T]) -> T:
     """Run Graphiti async APIs from ADK sync tool functions (may be called under a running loop)."""
     try:
@@ -90,9 +128,13 @@ def run_graphiti_coroutine(coro: Coroutine[Any, Any, T]) -> T:
 
 @lru_cache(maxsize=1)
 def graphiti() -> Graphiti:
-    """Singleton Graphiti over Oracle PG (DSN-first, URI fallback)."""
+    """Singleton Graphiti over Oracle PG with explicit LLM/embedder setup."""
     driver = OraclePGDriver(**_oracle_driver_kwargs())
-    return Graphiti(graph_driver=driver)
+    return Graphiti(
+        graph_driver=driver,
+        llm_client=_build_llm_client(),
+        embedder=_build_embedder(),
+    )
 
 
 def compact_model(obj: Any) -> dict[str, Any]:
