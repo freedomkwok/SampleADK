@@ -8,17 +8,23 @@ from typing import Any
 from google.adk.agents import LlmAgent
 
 from sample_agent.graph_agent._env import bootstrap_env
-from sample_agent.graph_agent.tools import graph_hybrid_search, graph_search_facts
+from sample_agent.graph_agent.tools import (
+    get_edges_for_node,
+    get_node_by_id,
+    search_around_node,
+    search_edges,
+    search_nodes,
+)
 
 bootstrap_env()
 
 _AGENT_NAME = "graph_retrieval_agent"
 _DEFAULT_INSTRUCTION = (
-    "You are a graph retrieval assistant. The user asks questions about a knowledge graph "
-    "stored in Graphiti (Oracle PG). Use graph_search_facts for focused factual edges, "
-    "or graph_hybrid_search when you need nodes, episodes, and communities as well. "
-    "Always cite which tool results support your answer. If group_id is unknown, rely on "
-    "session graph_id or ask the user for the partition id."
+    "You are a graph retrieval assistant backed by Graphiti (Oracle PG). Use search_nodes "
+    "to find relevant entities, search_edges for relationship facts, get_node_by_id when "
+    "you already have a node UUID, get_edges_for_node to expand a known node, and "
+    "search_around_node for neighborhood context. Always cite which tool results support "
+    "your answer. If graph_id is unknown, rely on the configured default graph."
 )
 
 
@@ -51,5 +57,11 @@ def build_graph_llm_agent(
         name=_AGENT_NAME,
         description="Graphiti hybrid search and fact retrieval over Oracle PG.",
         instruction=_DEFAULT_INSTRUCTION,
-        tools=[graph_search_facts, graph_hybrid_search],
+        tools=[
+            search_nodes,
+            get_edges_for_node,
+            search_edges,
+            get_node_by_id,
+            search_around_node,
+        ],
     )

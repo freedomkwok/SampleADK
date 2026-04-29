@@ -8,9 +8,8 @@ import os
 from functools import lru_cache
 from typing import Any, Coroutine, TypeVar
 
-from graphiti_core.driver.oracle_pg_driver import OraclePGDriver
+from graphiti_client import GraphitiOraclePGClient, GraphitiOraclePGConnection  # type: ignore[import-not-found]
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
-from graphiti_core.graphiti import Graphiti
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
@@ -45,14 +44,12 @@ def _env_bool(name: str) -> bool | None:
     return None
 
 
-def _oracle_driver_kwargs() -> dict[str, Any]:
+def _oracle_connection() -> GraphitiOraclePGConnection:
     graph_id = _env_str("GRAPHITI_GRAPH_ID") or _env_str("GRAPH_ID")
     dsn = _env_str("ORACLE_DSN")
-    uri = None if dsn else _env_str("ORACLE_URI")
     user = _env_str("ORACLE_USER")
     password = _env_str("ORACLE_PASSWORD")
     max_coroutines = _env_int("ORACLE_MAX_COROUTINES")
-    log_queries = _env_bool("ORACLE_LOG_QUERIES")
 
     connect_kwargs: dict[str, int] = {}
     for env_name, key in (
@@ -64,21 +61,20 @@ def _oracle_driver_kwargs() -> dict[str, Any]:
         if value is not None:
             connect_kwargs[key] = value
 
-    if dsn is None and uri is None:
-        raise ValueError("Oracle Graphiti mode requires ORACLE_DSN (preferred) or ORACLE_URI.")
+    if not dsn or not user or not password:
+        raise ValueError("Oracle Graphiti mode requires ORACLE_DSN, ORACLE_USER, and ORACLE_PASSWORD.")
+    if not graph_id:
+        raise ValueError("Oracle Graphiti mode requires GRAPHITI_GRAPH_ID or GRAPH_ID.")
 
-    kwargs: dict[str, Any] = {"graph_id": graph_id, "dsn": dsn, "uri": uri}
-    if user is not None:
-        kwargs["user"] = user
-    if password is not None:
-        kwargs["password"] = password
-    if max_coroutines is not None:
-        kwargs["max_coroutines"] = max_coroutines
-    if log_queries is not None:
-        kwargs["log_queries"] = log_queries
-    if connect_kwargs:
-        kwargs["connect_kwargs"] = connect_kwargs
-    return kwargs
+    return GraphitiOraclePGConnection(
+        dsn=dsn,
+        user=user,
+        password=password,
+        graph_id=graph_id,
+        connect_kwargs=connect_kwargs or None,
+        max_coroutines=max_coroutines,
+        log_queries=bool(_env_bool("ORACLE_LOG_QUERIES")),
+    )
 
 
 def _build_llm_client() -> OpenAIGenericClient:
@@ -116,6 +112,10 @@ def _build_embedder() -> OpenAIEmbedder:
     return OpenAIEmbedder(config=config)
 
 
+def _embedder_max_batch_size() -> int | None:
+    return _env_int("GRAPHITI_EMBEDDING_MAX_BATCH_SIZE")
+
+
 def run_graphiti_coroutine(coro: Coroutine[Any, Any, T]) -> T:
     """Run Graphiti async APIs from ADK sync tool functions (may be called under a running loop)."""
     try:
@@ -127,14 +127,38 @@ def run_graphiti_coroutine(coro: Coroutine[Any, Any, T]) -> T:
 
 
 @lru_cache(maxsize=1)
-def graphiti() -> Graphiti:
-    """Singleton Graphiti over Oracle PG with explicit LLM/embedder setup."""
-    driver = OraclePGDriver(**_oracle_driver_kwargs())
-    return Graphiti(
-        graph_driver=driver,
+def graphiti_client() -> GraphitiOraclePGClient:
+    """Singleton Graphiti Oracle PG client with explicit LLM/embedder setup."""
+    connection = _oracle_connection()
+    return GraphitiOraclePGClient.from_connection(
+        dsn=connection.dsn,
+        user=connection.user,
+        password=connection.password,
+        graph_id=connection.graph_id,
         llm_client=_build_llm_client(),
         embedder=_build_embedder(),
+        connect_kwargs=connection.connect_kwargs,
+        max_coroutines=connection.max_coroutines,
+        log_queries=connection.log_queries,
+        embedder_max_batch_size=_embedder_max_batch_size(),
+        run_async=run_graphiti_coroutine,
     )
+
+
+class GraphitiToolClient:
+    """Small adapter matching the zep_agent tool client shape."""
+
+    def __init__(self, client: GraphitiOraclePGClient | None = None) -> None:
+        self.client = client or graphiti_client()
+
+    def resolve_graph_id(self, graph_id: str = "") -> str:
+        return (
+            str(graph_id or "").strip()
+            or _env_str("GRAPHITI_DEFAULT_GROUP_ID")
+            or _env_str("GRAPHITI_GRAPH_ID")
+            or _env_str("GRAPH_ID")
+            or ""
+        )
 
 
 def compact_model(obj: Any) -> dict[str, Any]:

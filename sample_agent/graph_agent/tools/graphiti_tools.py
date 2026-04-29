@@ -1,105 +1,161 @@
-"""ADK-exposed tools backed by Graphiti hybrid search (Oracle PG driver)."""
+"""ADK-exposed tools backed by the Graphiti Oracle PG client."""
 
 from __future__ import annotations
 
-import os
+from functools import lru_cache
 from typing import Any
 
-from google.adk.agents import Context
-from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
-
-from sample_agent.graph_agent.tools.graphiti_helper import compact_model, graphiti, run_graphiti_coroutine
+from sample_agent.graph_agent.tools.graphiti_helper import GraphitiToolClient
 
 
-def _resolved_group_ids(group_id: str, tool_context: Context) -> list[str] | None:
-    gid = (group_id or "").strip()
-    if not gid:
-        gid = str(tool_context.state.get("graph_id") or "").strip()
-    if not gid:
-        gid = (os.getenv("GRAPHITI_DEFAULT_GROUP_ID") or "").strip()
-    return [gid] if gid else None
+_EMBEDDING_FIELDS = {
+    "fact_embedding",
+    "name_embedding",
+    "summary_embedding",
+    "content_embedding",
+}
 
 
-def _normalized_query(query: str) -> str:
-    return query.strip()
+@lru_cache(maxsize=1)
+def _client() -> GraphitiToolClient:
+    return GraphitiToolClient()
 
 
-async def _search_facts_async(query: str, limit: int, group_ids: list[str] | None) -> dict[str, Any]:
-    client = graphiti()
-    normalized_query = _normalized_query(query)
-    edges = await client.search(query=normalized_query, num_results=max(1, limit), group_ids=group_ids)
+def to_plain_dict(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return _without_embeddings(dumped)
+    if isinstance(value, dict):
+        return _without_embeddings(dict(value))
+    if hasattr(value, "__dict__"):
+        return _without_embeddings(
+            {
+                key: raw_value
+                for key, raw_value in vars(value).items()
+                if not key.startswith("_")
+            }
+        )
+    return {}
+
+
+def _without_embeddings(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key not in _EMBEDDING_FIELDS}
+
+
+def extract_items(container: Any, *, preferred_keys: tuple[str, ...]) -> list[Any]:
+    if isinstance(container, list):
+        return list(container)
+    payload = to_plain_dict(container)
+    for key in preferred_keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def trim_node_fields(raw_node: Any) -> dict[str, Any]:
+    node_payload = to_plain_dict(raw_node)
+    summary = node_payload.get("summary")
+    score = node_payload.get("score")
+    uuid_ = node_payload.get("uuid_") or node_payload.get("uuid")
     return {
-        "query": normalized_query,
-        "group_ids": group_ids,
-        "edges": [compact_model(edge) for edge in edges],
-        "count": len(edges),
+        "name": node_payload.get("name"),
+        "attributes": node_payload.get("attributes")
+        if isinstance(node_payload.get("attributes"), dict)
+        else {},
+        "metadata": node_payload.get("metadata")
+        if isinstance(node_payload.get("metadata"), dict)
+        else {},
+        "summary": summary if isinstance(summary, str) else "",
+        "score": score if isinstance(score, (int, float)) else None,
+        "uuid_": uuid_ if isinstance(uuid_, str) else "",
     }
 
 
-async def _hybrid_search_async(query: str, limit: int, group_ids: list[str] | None) -> dict[str, Any]:
-    client = graphiti()
-    cfg = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": max(1, limit)})
-    normalized_query = _normalized_query(query)
-    results = await client.search_(query=normalized_query, config=cfg, group_ids=group_ids)
-    return {
-        "query": normalized_query,
-        "group_ids": group_ids,
-        "edges": [compact_model(edge) for edge in results.edges],
-        "nodes": [compact_model(node) for node in results.nodes],
-        "episodes": [compact_model(ep) for ep in results.episodes],
-        "communities": [compact_model(c) for c in results.communities],
-        "counts": {
-            "edges": len(results.edges),
-            "nodes": len(results.nodes),
-            "episodes": len(results.episodes),
-            "communities": len(results.communities),
-        },
-    }
-
-
-def graph_search_facts(
-    query: str,
-    limit: int = 10,
-    group_id: str = "",
-    *,
-    tool_context: Context,
-) -> dict[str, Any]:
-    """Hybrid edge search returning ranked entity-edge facts for a natural-language query.
-
-    Use ``group_id`` to scope to one Graphiti partition, or rely on session ``graph_id``
-    (from A2A message metadata) / ``GRAPHITI_DEFAULT_GROUP_ID``.
-    """
-    group_ids = _resolved_group_ids(group_id, tool_context)
-    normalized_query = _normalized_query(query)
+def search_nodes(query: str, limit: int = 10, graph_id: str = "") -> dict[str, Any]:
+    """Find graph entities relevant to a natural-language query."""
+    client = _client()
+    resolved_graph_id = client.resolve_graph_id(graph_id)
+    normalized_query = query.strip()
     if not normalized_query:
-        return {"query": "", "group_ids": group_ids, "edges": [], "count": 0}
+        return {"graph_id": resolved_graph_id, "nodes": [], "count": 0}
+    response = client.client.graph.search(
+        query=normalized_query,
+        graph_id=resolved_graph_id or None,
+        scope="nodes",
+        limit=max(1, limit),
+    )
+    nodes = [trim_node_fields(node) for node in (getattr(response, "nodes", None) or []) if node]
+    return {"graph_id": resolved_graph_id, "nodes": nodes, "count": len(nodes)}
+
+
+def search_edges(query: str, limit: int = 10, graph_id: str = "") -> dict[str, Any]:
+    """Find relationship facts relevant to a natural-language query."""
+    client = _client()
+    resolved_graph_id = client.resolve_graph_id(graph_id)
+    normalized_query = query.strip()
+    if not normalized_query:
+        return {"graph_id": resolved_graph_id, "edges": [], "count": 0}
+    response = client.client.graph.search(
+        query=normalized_query,
+        graph_id=resolved_graph_id or None,
+        scope="edges",
+        limit=max(1, limit),
+    )
+    edges = [to_plain_dict(edge) for edge in (getattr(response, "edges", None) or []) if edge]
+    return {"graph_id": resolved_graph_id, "edges": edges, "count": len(edges)}
+
+
+def get_edges_for_node(node_uuid: str) -> dict[str, Any]:
+    """Fetch all edges directly connected to one node."""
+    client = _client()
+    normalized_uuid = str(node_uuid).strip()
+    if not normalized_uuid:
+        return {"node_uuid": normalized_uuid, "edges": [], "count": 0}
+    response = client.client.graph.node.get_edges(node_uuid=normalized_uuid)
+    edges = [to_plain_dict(edge) for edge in extract_items(response, preferred_keys=("edges",)) if edge]
+    return {"node_uuid": normalized_uuid, "edges": edges, "count": len(edges)}
+
+
+def get_node_by_id(node_uuid: str) -> dict[str, Any]:
+    """Fetch one node by UUID and return a compact, model-safe shape."""
+    client = _client()
+    normalized_uuid = str(node_uuid).strip()
+    if not normalized_uuid:
+        return {"node_uuid": normalized_uuid, "node": None}
     try:
-        return run_graphiti_coroutine(_search_facts_async(normalized_query, limit, group_ids))
+        node = client.client.graph.node.get(uuid_=normalized_uuid)
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc), "query": normalized_query, "group_ids": group_ids}
+        return {"node_uuid": normalized_uuid, "node": None, "error": str(exc)}
+    return {"node_uuid": normalized_uuid, "node": trim_node_fields(node)}
 
 
-def graph_hybrid_search(
-    query: str,
+def search_around_node(
+    node_uuid: str,
+    query: str = "",
     limit: int = 10,
-    group_id: str = "",
-    *,
-    tool_context: Context,
+    graph_id: str = "",
 ) -> dict[str, Any]:
-    """Full hybrid search across edges, nodes, episodes, and communities (RRF recipe)."""
-    group_ids = _resolved_group_ids(group_id, tool_context)
-    normalized_query = _normalized_query(query)
-    if not normalized_query:
+    """Build a neighborhood context bundle around a node."""
+    node_result = get_node_by_id(node_uuid=node_uuid)
+    node = node_result.get("node")
+    if not isinstance(node, dict):
         return {
-            "query": "",
-            "group_ids": group_ids,
+            "node_uuid": str(node_uuid).strip(),
+            "node": None,
             "edges": [],
-            "nodes": [],
-            "episodes": [],
-            "communities": [],
-            "counts": {"edges": 0, "nodes": 0, "episodes": 0, "communities": 0},
+            "related_nodes": [],
+            "related_edges": [],
         }
-    try:
-        return run_graphiti_coroutine(_hybrid_search_async(normalized_query, limit, group_ids))
-    except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc), "query": normalized_query, "group_ids": group_ids}
+    edge_result = get_edges_for_node(node_uuid=node_uuid)
+    fallback_query = query.strip() or str(node.get("name") or node.get("summary") or node_uuid)
+    related_nodes = search_nodes(query=fallback_query, limit=limit, graph_id=graph_id)
+    related_edges = search_edges(query=fallback_query, limit=limit, graph_id=graph_id)
+    return {
+        "node_uuid": str(node_uuid).strip(),
+        "node": node,
+        "edges": edge_result.get("edges", []),
+        "related_nodes": related_nodes.get("nodes", []),
+        "related_edges": related_edges.get("edges", []),
+    }
